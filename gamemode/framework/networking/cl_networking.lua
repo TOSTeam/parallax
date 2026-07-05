@@ -451,6 +451,18 @@ ax.net:Hook("inventory.receiver.remove", function(inventoryID, receiver)
     inventory:RemoveReceiver(receiver)
 end)
 
+-- Applies a non-empty placement blob (grid position, slot id, ...) to an item via its
+-- inventory type's `ApplyItemRow`. Shared by "inventory.item.add" and "item.transfer" so
+-- the empty-check/typeDef lookup/ApplyItemRow shape is defined once.
+local function ApplyPlacement(inventory, itemObject, placement)
+    if ( !istable(placement) or next(placement) == nil ) then return end
+
+    local typeDef = ax.inventory:GetType(inventory)
+    if ( istable(typeDef) and isfunction(typeDef.ApplyItemRow) ) then
+        typeDef.ApplyItemRow(itemObject, placement)
+    end
+end
+
 ax.net:Hook("inventory.item.add", function(inventoryID, itemID, itemClass, itemData, placement)
 
     -- If inventory 0 (world) isn't tracked clientside, still create the item instance so it exists clientside
@@ -477,35 +489,7 @@ ax.net:Hook("inventory.item.add", function(inventoryID, itemID, itemClass, itemD
     inventory.items[itemID] = itemObject
     ax.item.instances[itemID] = itemObject
 
-    if ( istable(placement) and next(placement) != nil ) then
-        local typeDef = ax.inventory:GetType(inventory)
-        if ( istable(typeDef) and isfunction(typeDef.ApplyItemRow) ) then
-            typeDef.ApplyItemRow(itemObject, placement)
-        end
-    end
-
-    if ( IsValid(ax.gui.inventory) ) then
-        ax.gui.inventory:PopulateItems()
-    end
-end)
-
--- "item.transfer" fires when an item's inventoryID changes (it left one inventory and
--- entered another); "inventory.item.moved" fires instead when an item is repositioned
--- within the SAME inventory (inventoryID unchanged, only its placement - gridX/gridY,
--- slotID, ... - changed). Never repurpose one for the other's case.
-ax.net:Hook("inventory.item.moved", function(inventoryID, itemID, placement)
-    local inventory = ax.inventory.instances[inventoryID]
-    if ( !istable(inventory) ) then return end
-
-    local item = ax.item.instances[itemID]
-    if ( !istable(item) ) then return end
-
-    if ( istable(placement) and next(placement) != nil ) then
-        local typeDef = ax.inventory:GetType(inventory)
-        if ( istable(typeDef) and isfunction(typeDef.ApplyItemRow) ) then
-            typeDef.ApplyItemRow(item, placement)
-        end
-    end
+    ApplyPlacement(inventory, itemObject, placement)
 
     if ( IsValid(ax.gui.inventory) ) then
         ax.gui.inventory:PopulateItems()
@@ -548,6 +532,9 @@ ax.net:Hook("relay.sync", function(data)
     ax.relay.data = data
 end)
 
+-- Fires whenever an item's placement changes: a cross-inventory move (from != to),
+-- or a reposition within the same inventory (from == to - only the placement
+-- blob - gridX/gridY, slotID, ... - changed).
 ax.net:Hook("item.transfer", function(itemID, fromInventoryID, toInventoryID, placement)
 
     local item = ax.item.instances[itemID]
@@ -580,8 +567,11 @@ ax.net:Hook("item.transfer", function(itemID, fromInventoryID, toInventoryID, pl
         end
     end
 
-    -- Remove from the old inventory, if applicable
-    if ( fromInventoryID != 0 and fromInventory and fromInventory:IsReceiver(ax.client) ) then
+    -- Remove from the old inventory, if applicable. A same-inventory reposition
+    -- (from == to) never touches the items tables - the item stays where it is and
+    -- only its placement is applied below.
+    local repositioning = ( fromInventoryID == toInventoryID )
+    if ( !repositioning and fromInventoryID != 0 and fromInventory and fromInventory:IsReceiver(ax.client) ) then
         fromInventory.items[item.id] = nil
     end
 
@@ -591,12 +581,7 @@ ax.net:Hook("item.transfer", function(itemID, fromInventoryID, toInventoryID, pl
     if ( toInventoryID != 0 ) then
         toInventory.items[item.id] = item
 
-        if ( istable(placement) and next(placement) != nil ) then
-            local typeDef = ax.inventory:GetType(toInventory)
-            if ( istable(typeDef) and isfunction(typeDef.ApplyItemRow) ) then
-                typeDef.ApplyItemRow(item, placement)
-            end
-        end
+        ApplyPlacement(toInventory, item, placement)
     end
 
     if ( IsValid(ax.gui.inventory) ) then

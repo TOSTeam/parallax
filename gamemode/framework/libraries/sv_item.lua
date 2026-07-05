@@ -68,6 +68,29 @@ function ax.item:RunAction(client, item, action, context, callback)
     return true
 end
 
+--- Resolves a `Transfer` endpoint argument (an inventory instance, an inventory id, or
+-- 0/nil for the world) to `(inventory, id)`. Shared by both the `from` and `to` sides so
+-- the instance/id/world-fallback shape is defined once.
+-- @realm server
+-- @param value table|number|nil Source/destination inventory (instance, id, or 0/nil for world).
+-- @return table|nil inventory The resolved inventory, or nil if an id was given but doesn't
+-- resolve to a live instance.
+-- @return number|nil id The resolved inventory's id (0 for the world), or nil alongside a nil inventory.
+local function ResolveInventoryRef(value)
+    if ( istable(value) ) then
+        return value, value.id
+    elseif ( isnumber(value) and value > 0 ) then
+        local inventory = ax.inventory.instances[value]
+        if ( !istable(inventory) ) then
+            return nil, nil
+        end
+
+        return inventory, value
+    end
+
+    return ax.inventory.instances[0], 0
+end
+
 --- The single transaction that moves (or repositions) an item. Every scenario that
 -- changes an item's placement - drag-and-drop, equip, world drop/pickup, a reward
 -- grant - goes through this; there is no other way to change `ax_items.placement`
@@ -94,32 +117,16 @@ function ax.item:Transfer(item, fromInventory, toInventory, placement, client, c
         return false, "inventory.reason.invalid"
     end
 
-    local fromInventoryID = 0
-    if ( istable(fromInventory) ) then
-        fromInventoryID = fromInventory.id
-    elseif ( isnumber(fromInventory) and fromInventory > 0 ) then
-        fromInventoryID = fromInventory
-        fromInventory = ax.inventory.instances[fromInventoryID]
-
-        if ( !istable(fromInventory) ) then
-            return false, "inventory.reason.invalid"
-        end
-    else
-        fromInventory = ax.inventory.instances[0]
+    local fromInventoryID
+    fromInventory, fromInventoryID = ResolveInventoryRef(fromInventory)
+    if ( fromInventory == nil ) then
+        return false, "inventory.reason.invalid"
     end
 
-    local toInventoryID = 0
-    if ( istable(toInventory) ) then
-        toInventoryID = toInventory.id
-    elseif ( isnumber(toInventory) and toInventory > 0 ) then
-        toInventoryID = toInventory
-        toInventory = ax.inventory.instances[toInventoryID]
-
-        if ( !istable(toInventory) ) then
-            return false, "inventory.reason.invalid"
-        end
-    else
-        toInventory = ax.inventory.instances[0]
+    local toInventoryID
+    toInventory, toInventoryID = ResolveInventoryRef(toInventory)
+    if ( toInventory == nil ) then
+        return false, "inventory.reason.invalid"
     end
 
     local repositioning = ( fromInventoryID == toInventoryID )
@@ -168,61 +175,82 @@ function ax.item:Transfer(item, fromInventory, toInventory, placement, client, c
         return false, reason
     end
 
-    -- Item-level veto hook - any module can block a specific transfer.
-    local hookOk, hookReason = hook.Run("CanTransferItem", client, item, fromInventory, toInventory, placement)
-    if ( hookOk == false ) then
-        return fail(hookReason or "inventory.reason.invalid")
-    end
-
-    -- Type-level from/to rules.
     local fromTypeDef = ax.inventory:GetType(fromInventory)
-    if ( istable(fromTypeDef) and isfunction(fromTypeDef.CanRemoveItem) ) then
-        local canRemove, removeReason = fromTypeDef.CanRemoveItem(fromInventory, item)
-        if ( canRemove == false ) then
-            return fail(removeReason or "inventory.reason.invalid")
-        end
-    end
-
     local toTypeDef = ax.inventory:GetType(toInventory)
 
-    -- Weight capacity is a base-meta check (back-compat) for non-addressed types (e.g.
-    -- "weight") - addressed types (grid/slot) have their own spatial capacity model via
-    -- CanReceiveItem/ResolvePlacement below, so weight isn't a second gate on top of it.
-    -- See inventory:IsAddressedType.
-    if ( toInventoryID != 0 and !toInventory:IsAddressedType() and math.Round(toInventory:GetWeight() + item:GetWeight(), 2) > toInventory:GetMaxWeight() ) then
-        return fail("inventory.reason.no_space")
-    end
-
-    if ( istable(toTypeDef) and isfunction(toTypeDef.CanReceiveItem) ) then
-        local canReceive, receiveReason = toTypeDef.CanReceiveItem(toInventory, item, placement)
-        if ( canReceive == false ) then
-            return fail(receiveReason or "inventory.reason.invalid")
-        end
-    end
-
-    -- Placement resolution/validation - skipped entirely for non-addressed
-    -- types, which keep writing an empty placement blob.
-    local resolvedPlacement = {}
-    if ( istable(toTypeDef) and isfunction(toTypeDef.ResolvePlacement) ) then
-        local itemWidth = tonumber(item.width) or 1
-        local itemHeight = tonumber(item.height) or 1
-
-        -- `item` itself is passed as the ignored occupant so repositioning within the
-        -- same grid inventory doesn't collide with the item's own current cells.
-        local resolved, placementReason = toTypeDef.ResolvePlacement(toInventory, itemWidth, itemHeight, placement, item)
-        if ( !istable(resolved) ) then
-            return fail(placementReason or "inventory.reason.no_space")
+    -- Validation phase runs inside a pcall - a module's CanTransferItem hook or a type's
+    -- CanRemoveItem/CanReceiveItem/ResolvePlacement callback is third-party code, and an
+    -- error thrown here (before the item is ever unlocked) would otherwise leave the item
+    -- locked for the rest of the session.
+    local function runValidation()
+        -- Item-level veto hook - any module can block a specific transfer.
+        local hookOk, hookReason = hook.Run("CanTransferItem", client, item, fromInventory, toInventory, placement)
+        if ( hookOk == false ) then
+            return false, hookReason or "inventory.reason.invalid"
         end
 
-        resolvedPlacement = resolved
+        -- Type-level from/to rules.
+        if ( istable(fromTypeDef) and isfunction(fromTypeDef.CanRemoveItem) ) then
+            local canRemove, removeReason = fromTypeDef.CanRemoveItem(fromInventory, item)
+            if ( canRemove == false ) then
+                return false, removeReason or "inventory.reason.invalid"
+            end
+        end
+
+        -- Weight capacity is a base-meta check (back-compat) for non-addressed types (e.g.
+        -- "weight") - addressed types (grid/slot) have their own spatial capacity model via
+        -- CanReceiveItem/ResolvePlacement below, so `CanStoreWeight` is a no-op for them.
+        -- See inventory:IsAddressedType. Skipped for the world inventory (id 0), which has
+        -- no weight cap.
+        if ( toInventoryID != 0 and !( toInventory:CanStoreWeight(item:GetWeight()) ) ) then
+            return false, "inventory.reason.no_space"
+        end
+
+        if ( istable(toTypeDef) and isfunction(toTypeDef.CanReceiveItem) ) then
+            local canReceive, receiveReason = toTypeDef.CanReceiveItem(toInventory, item, placement)
+            if ( canReceive == false ) then
+                return false, receiveReason or "inventory.reason.invalid"
+            end
+        end
+
+        -- Placement resolution/validation - skipped entirely for non-addressed
+        -- types, which keep writing an empty placement blob.
+        local resolvedPlacement = {}
+        if ( istable(toTypeDef) and isfunction(toTypeDef.ResolvePlacement) ) then
+            local itemWidth = tonumber(item.width) or 1
+            local itemHeight = tonumber(item.height) or 1
+
+            -- `item` itself is passed as the ignored occupant so repositioning within the
+            -- same grid inventory doesn't collide with the item's own current cells.
+            local resolved, placementReason = toTypeDef.ResolvePlacement(toInventory, itemWidth, itemHeight, placement, item)
+            if ( !istable(resolved) ) then
+                return false, placementReason or "inventory.reason.no_space"
+            end
+
+            resolvedPlacement = resolved
+        end
+
+        -- Depth-1 nesting - a universal engine rule, not a type's responsibility. An
+        -- item that itself owns an inventory (a bag) can never end up inside an inventory
+        -- that is itself nested inside an item.
+        if ( toInventory.ownerKind == "item" and ax.inventory:ItemOwnsInventory(item.id) ) then
+            return false, "inventory.reason.nesting"
+        end
+
+        return true, nil, resolvedPlacement
     end
 
-    -- Depth-1 nesting - a universal engine rule, not a type's responsibility. An
-    -- item that itself owns an inventory (a bag) can never end up inside an inventory
-    -- that is itself nested inside an item.
-    if ( toInventory.ownerKind == "item" and ax.inventory:ItemOwnsInventory(item.id) ) then
-        return fail("inventory.reason.nesting")
+    local validationOk, valid, validationReason, resolvedPlacement = pcall(runValidation)
+    if ( !validationOk ) then
+        ax.util:PrintError("Error during transfer validation: " .. tostring(valid))
+        return fail("inventory.reason.invalid")
     end
+
+    if ( !valid ) then
+        return fail(validationReason)
+    end
+
+    resolvedPlacement = resolvedPlacement or {}
 
     if ( itemIsTemporary or fromIsTemporary or toIsTemporary ) then
         toInventory.items[item.id] = item
@@ -352,10 +380,9 @@ function ax.item:Transfer(item, fromInventory, toInventory, placement, client, c
             elseif ( repositioning ) then
                 -- Same-inventory reposition - only the placement changed, so a full
                 -- inventory:Sync() (every item, every field) would be wildly disproportionate
-                -- to a single placement blob. "item.transfer" fires only when inventoryID
-                -- changes (see its client hook doc), so it doesn't fit here - this is its
-                -- same-inventory counterpart.
-                ax.net:Start(toInventory:GetReceivers(), "inventory.item.moved", toInventoryID, item.id, resolvedPlacement)
+                -- to a single placement blob. Reuses "item.transfer" with from == to -
+                -- the client handler treats that as a pure placement update.
+                ax.net:Start(toInventory:GetReceivers(), "item.transfer", item.id, fromInventoryID, toInventoryID, resolvedPlacement)
             else
                 -- Cross-inventory move. "item.transfer" now carries the resolved placement
                 -- directly, so receivers no longer need a trailing full Sync() of either
