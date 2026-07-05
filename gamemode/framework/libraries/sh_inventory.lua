@@ -121,6 +121,30 @@ ax.inventory:RegisterOwnerResolver({
     end,
 })
 
+--- Allocates the next unused negative id from a running counter stored on `holder`, e.g.
+-- for tagging in-memory-only ("temporary") objects that share an id space with
+-- database-backed ones (whose ids are always positive). Walks the counter downward
+-- until `existing[id]` is nil. Shared by `CreateTemporary` (temporary inventory ids
+-- against `self.instances`) and `inventory:AddItem` (temporary item ids against
+-- `ax.item.instances`).
+-- @realm server
+-- @param holder table Any table to persist the running counter on, as `holder._nextTemporaryID`.
+-- @param existing table Table keyed by candidate id - a slot is free once `existing[id] == nil`.
+-- @return number id The allocated (unused) negative id.
+-- @usage local temporaryItemID = ax.inventory:AllocateTemporaryID(ax.item, ax.item.instances)
+function ax.inventory:AllocateTemporaryID(holder, existing)
+    holder._nextTemporaryID = holder._nextTemporaryID or -1
+    local id = holder._nextTemporaryID
+
+    while ( existing[id] != nil ) do
+        id = id - 1
+    end
+
+    holder._nextTemporaryID = id - 1
+
+    return id
+end
+
 --- Whether `client` may modify (not merely view/receive sync for) `inventory`, per the
 -- core's one built-in rule (an owner-character may modify their own inventories) plus
 -- the inventory type's own `CanAccess` rule (distance, locks, faction/rank, ...).
@@ -155,6 +179,54 @@ function ax.inventory:CanAccess(inventory, client)
     end
 
     return false
+end
+
+--- Returns every loaded inventory owned by `owner` (a character, item, or anything a
+-- registered resolver recognises). Only inventories already loaded into
+-- `ax.inventory.instances` are returned - call `ax.inventory:RestoreOwner(owner, ...)`
+-- first if `owner` was just loaded and its inventories haven't synced yet. Item owners
+-- resolve in O(1) via `itemOwnerIndex`; other owner kinds scan `self.instances`, since
+-- there is no equivalent index for them.
+-- @realm shared
+-- @param owner any A character, item, entity, or anything a registered resolver recognises.
+-- @return table An array of inventory instances.
+function ax.inventory:GetOwnedBy(owner)
+    local owned = {}
+
+    local ownerKind, ownerID = self:ResolveOwner(owner)
+    if ( ownerKind == nil or ownerID == nil ) then return owned end
+
+    if ( ownerKind == "item" ) then
+        if ( self:ItemOwnsInventory(ownerID) ) then
+            owned[1] = self.instances[self.itemOwnerIndex[ownerID]]
+        end
+
+        return owned
+    end
+
+    for _, inventory in pairs(self.instances) do
+        if ( istable(inventory) and inventory.ownerKind == ownerKind and tostring(inventory.ownerID) == tostring(ownerID) ) then
+            owned[#owned + 1] = inventory
+        end
+    end
+
+    return owned
+end
+
+--- Returns `owner`'s owned inventory of the given type (e.g. `"equipment"`/`"bag"`), or
+-- nil if it doesn't have one loaded. See `GetOwnedBy`.
+-- @realm shared
+-- @param owner any A character, item, entity, or anything a registered resolver recognises.
+-- @param typeID string The inventory type id to look for.
+-- @return table|nil
+function ax.inventory:GetOwnedByType(owner, typeID)
+    for _, inventory in pairs(self:GetOwnedBy(owner)) do
+        if ( inventory:GetTypeID() == typeID ) then
+            return inventory
+        end
+    end
+
+    return nil
 end
 
 --- Whether `itemID` owns an inventory (e.g. a bag/container item) - i.e. some
@@ -230,6 +302,53 @@ function ax.inventory:GetDefaultType()
 end
 
 if ( SERVER ) then
+    --- Builds a live inventory instance from a field set. Shared by `CreateTemporary`,
+    -- `Create`, and `BuildInventoryShell` so the id/items/maxWeight/receivers/typeID/
+    -- ownerKind/ownerID/data shape is defined exactly once.
+    -- @realm server
+    -- @param fields table `{ id, items, maxWeight, receivers, typeID, ownerKind, ownerID, data }`.
+    -- @return table inventory
+    local function NewInstance(fields)
+        local inventory = setmetatable({}, ax.inventory.meta)
+        inventory.id = fields.id
+        inventory.items = fields.items or {}
+        inventory.maxWeight = fields.maxWeight
+        inventory.receivers = fields.receivers or {}
+        inventory.typeID = fields.typeID
+        inventory.ownerKind = fields.ownerKind
+        inventory.ownerID = fields.ownerID
+        inventory.data = fields.data or {}
+
+        return inventory
+    end
+
+    --- Resolves the typeID/instance data/max weight/owner an inventory should be created
+    -- with from a `Create`/`CreateTemporary` `data` table, applying the same default-type
+    -- (`GetDefaultType`) and config-weight (`inventory.weight.max`) fallbacks in both.
+    -- @realm server
+    -- @param data table The `data` table passed to `Create`/`CreateTemporary`.
+    -- @return string typeID
+    -- @return table instanceData
+    -- @return number maxWeight
+    -- @return string|nil ownerKind
+    -- @return number|nil ownerID
+    local function ResolveCreationFields(data)
+        local usingDefaultType = data.typeID == nil
+        local schemaTypeID, schemaTypeData = ax.inventory:GetDefaultType()
+        local typeID = data.typeID or schemaTypeID
+        local instanceData = istable(data.data) and data.data or (usingDefaultType and table.Copy(schemaTypeData) or {})
+
+        local defaultWeight = tonumber(ax.config:Get("inventory.weight.max", 30.0)) or 30.0
+        if ( usingDefaultType and isnumber(schemaTypeData.maxWeight) ) then
+            defaultWeight = schemaTypeData.maxWeight
+        end
+
+        local maxWeight = tonumber(data.maxWeight) or defaultWeight
+        local ownerKind, ownerID = ax.inventory:ResolveOwner(data.owner)
+
+        return typeID, instanceData, maxWeight, ownerKind, ownerID
+    end
+
     --- Creates a temporary in-memory inventory instance (no database persistence).
     -- @realm server
     -- @param data table Optional data table. Recognised keys: `id`, `maxWeight`, `typeID`
@@ -241,14 +360,7 @@ if ( SERVER ) then
 
         local inventoryID = data.id
         if ( inventoryID == nil ) then
-            self._nextTemporaryID = self._nextTemporaryID or -1
-            inventoryID = self._nextTemporaryID
-
-            while ( self.instances[inventoryID] != nil ) do
-                inventoryID = inventoryID - 1
-            end
-
-            self._nextTemporaryID = inventoryID - 1
+            inventoryID = self:AllocateTemporaryID(self, self.instances)
         end
 
         local existing = self.instances[inventoryID]
@@ -258,33 +370,18 @@ if ( SERVER ) then
             end
         end
 
-        local usingDefaultType = data.typeID == nil
-        local schemaTypeID, schemaTypeData = self:GetDefaultType()
-        local typeID = data.typeID or schemaTypeID
-        local instanceData = istable(data.data) and data.data or (usingDefaultType and table.Copy(schemaTypeData) or {})
+        local typeID, instanceData, maxWeight, ownerKind, ownerID = ResolveCreationFields(data)
 
-        local defaultWeight = 30.0
-        if ( ax.config and isfunction(ax.config.Get) ) then
-            defaultWeight = tonumber(ax.config:Get("inventory.weight.max", defaultWeight)) or defaultWeight
-        end
-
-        if ( usingDefaultType and isnumber(schemaTypeData.maxWeight) ) then
-            defaultWeight = schemaTypeData.maxWeight
-        end
-
-        local ownerKind, ownerID = self:ResolveOwner(data.owner)
-
-        local inventory = setmetatable({}, ax.inventory.meta)
-        inventory.id = inventoryID
-        inventory.items = {}
-        inventory.maxWeight = tonumber(data.maxWeight) or defaultWeight
-        inventory.receivers = {}
+        local inventory = NewInstance({
+            id = inventoryID,
+            maxWeight = maxWeight,
+            typeID = typeID,
+            ownerKind = ownerKind,
+            ownerID = ownerID,
+            data = instanceData,
+        })
         inventory.isTemporary = true
         inventory.noSave = true
-        inventory.typeID = typeID
-        inventory.ownerKind = ownerKind
-        inventory.ownerID = ownerID
-        inventory.data = instanceData
 
         self.instances[inventoryID] = inventory
 
@@ -310,12 +407,7 @@ if ( SERVER ) then
     function ax.inventory:Create(data, callback)
         data = data or {}
 
-        local usingDefaultType = data.typeID == nil
-        local schemaTypeID, schemaTypeData = self:GetDefaultType()
-        local typeID = data.typeID or schemaTypeID
-        local instanceData = istable(data.data) and data.data or (usingDefaultType and table.Copy(schemaTypeData) or {})
-        local maxWeight = data.maxWeight or (usingDefaultType and schemaTypeData.maxWeight) or 30.0
-        local ownerKind, ownerID = self:ResolveOwner(data.owner)
+        local typeID, instanceData, maxWeight, ownerKind, ownerID = ResolveCreationFields(data)
 
         local query = mysql:Insert("ax_inventories")
             query:Insert("max_weight", maxWeight)
@@ -332,15 +424,14 @@ if ( SERVER ) then
                     return
                 end
 
-                local inventory = setmetatable({}, ax.inventory.meta)
-                inventory.id = lastInvId
-                inventory.items = {}
-                inventory.maxWeight = maxWeight
-                inventory.receivers = {}
-                inventory.typeID = typeID
-                inventory.ownerKind = ownerKind
-                inventory.ownerID = ownerID
-                inventory.data = instanceData
+                local inventory = NewInstance({
+                    id = lastInvId,
+                    maxWeight = maxWeight,
+                    typeID = typeID,
+                    ownerKind = ownerKind,
+                    ownerID = ownerID,
+                    data = instanceData,
+                })
 
                 ax.inventory.instances[lastInvId] = inventory
 
@@ -406,14 +497,14 @@ if ( SERVER ) then
     -- @return table inventory The shell instance (`.items` not yet populated).
     -- @return table|nil typeDef The inventory's resolved type definition.
     local function BuildInventoryShell(row)
-        local inventory = setmetatable({}, ax.inventory.meta)
-        inventory.id = tonumber(row.id)
-        inventory.maxWeight = tonumber(row.max_weight) or 30.0
-        inventory.receivers = {}
-        inventory.typeID = row.type_id or "weight"
-        inventory.ownerKind = row.owner_kind
-        inventory.ownerID = row.owner_id != nil and tonumber(row.owner_id) or nil
-        inventory.data = ax.util:SafeParseTable(row.data) or {}
+        local inventory = NewInstance({
+            id = tonumber(row.id),
+            maxWeight = tonumber(row.max_weight) or 30.0,
+            typeID = row.type_id or "weight",
+            ownerKind = row.owner_kind,
+            ownerID = row.owner_id != nil and tonumber(row.owner_id) or nil,
+            data = ax.util:SafeParseTable(row.data) or {},
+        })
 
         return inventory, ax.inventory:GetType(inventory)
     end
