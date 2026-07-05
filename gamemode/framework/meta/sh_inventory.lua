@@ -363,6 +363,38 @@ end
 function inventory:AddReceiver(receiver)
     if ( !istable(self.receivers) ) then self.receivers = {} end
 
+    if ( istable(receiver) ) then
+        local addedAny = false
+
+        for i = #receiver, 1, -1 do
+            local single = receiver[i]
+
+            if ( !ax.util:IsValidPlayer(single) ) then
+                ax.util:PrintError("Invalid player provided to ax.inventory:AddReceiver() (" .. tostring(single) .. ")")
+                continue
+            end
+
+            local alreadyExists = false
+            for j = 1, #self.receivers do
+                if ( self.receivers[j] == single ) then
+                    alreadyExists = true
+                    break
+                end
+            end
+
+            if ( !alreadyExists ) then
+                self.receivers[#self.receivers + 1] = single
+                addedAny = true
+
+                if ( SERVER ) then
+                    ax.net:Start(self:GetReceivers(), "inventory.receiver.add", self, single)
+                end
+            end
+        end
+
+        return addedAny
+    end
+
     if ( self.receivers[1] != nil ) then
         for i = 1, #self.receivers do
             if ( self.receivers[i] == receiver ) then
@@ -371,22 +403,7 @@ function inventory:AddReceiver(receiver)
         end
     end
 
-    if ( istable(receiver) ) then
-        for i = #receiver, 1, -1 do
-            if ( !ax.util:IsValidPlayer(receiver[i]) ) then
-                ax.util:PrintError("Invalid player provided to ax.inventory:AddReceiver() (" .. tostring(receiver[i]) .. ")")
-                return false
-            end
-
-            self.receivers[#self.receivers + 1] = receiver[i]
-
-            if ( SERVER ) then
-                ax.net:Start(self:GetReceivers(), "inventory.receiver.add", self, receiver)
-            end
-
-            return true
-        end
-    elseif ( ax.util:FindPlayer(receiver) ) then
+    if ( ax.util:FindPlayer(receiver) ) then
         self.receivers[#self.receivers + 1] = receiver
 
         if ( SERVER ) then
@@ -483,7 +500,7 @@ function inventory:CanStoreWeight(weight)
     local currentWeight = self:GetWeight()
     local maxWeight = self:GetMaxWeight()
 
-    if ( currentWeight + weight > maxWeight ) then
+    if ( math.Round(currentWeight + weight, 2) > maxWeight ) then
         return false, "This inventory cannot hold that much weight."
     end
 
@@ -573,14 +590,7 @@ if ( SERVER ) then
         end
 
         if ( self.isTemporary or self.noSave ) then
-            ax.item._nextTemporaryID = ax.item._nextTemporaryID or -1
-
-            while ( ax.item.instances[ax.item._nextTemporaryID] != nil ) do
-                ax.item._nextTemporaryID = ax.item._nextTemporaryID - 1
-            end
-
-            local temporaryItemID = ax.item._nextTemporaryID
-            ax.item._nextTemporaryID = temporaryItemID - 1
+            local temporaryItemID = ax.inventory:AllocateTemporaryID(ax.item, ax.item.instances)
 
             local itemObject = ax.item:Instance(temporaryItemID, class)
             if ( !istable(itemObject) ) then
@@ -629,7 +639,7 @@ if ( SERVER ) then
 
                 self.items[lastID] = itemObject
 
-                ax.net:Start(self:GetReceivers(), "inventory.item.add", self.id, itemObject.id, itemObject.class, itemObject.data)
+                ax.net:Start(self:GetReceivers(), "inventory.item.add", self.id, itemObject.id, itemObject.class, itemObject.data, placement)
 
                 if ( isfunction(callback) ) then
                     callback(itemObject)
