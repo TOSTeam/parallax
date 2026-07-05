@@ -441,14 +441,45 @@ function inventory:RemoveReceivers()
     return true
 end
 
+--- Returns whether this inventory's type addresses items by position (grid `x,y` or a
+-- named slot) rather than being a flat weight-capped list. Addressed types have their
+-- own spatial capacity model (`CanItemFit`/`FindEmptySlot`) - weight is not a second
+-- capacity gate on top of it, so `IsFull`/`CanStoreWeight`/`CanStoreItem` skip the
+-- weight check entirely for these types. Checked structurally (does the type define
+-- `CanItemFit`), not by comparing `typeID` to a hardcoded string, so this works for any
+-- future addressed type without core changes.
+-- @realm shared
+-- @return boolean
+function inventory:IsAddressedType()
+    local typeDef = ax.inventory:GetType(self)
+    return istable(typeDef) and isfunction(typeDef.CanItemFit)
+end
+
+--- Returns whether this inventory is at or over its weight capacity - i.e. whether
+-- `CanStoreWeight`/`CanStoreItem` would reject any further weight. Always false for
+-- addressed types (grid/slot) - see `IsAddressedType`. For "is there a free slot for an
+-- item of this size" on those, use `FindEmptySlot`/`CanItemFit` instead.
+-- @realm shared
+-- @return boolean
+function inventory:IsFull()
+    if ( self:IsAddressedType() ) then return false end
+
+    return self:GetWeight() >= self:GetMaxWeight()
+end
+
 --- Returns whether the given weight can be added without exceeding capacity.
 -- Computes `GetWeight() + weight` and compares it against `GetMaxWeight()`. Returns true when the addition fits, or false and an error string when it would overflow.
--- Use this before manually adjusting weights; `CanStoreItem` already calls this internally when an item has a weight field.
+-- Always returns true for addressed types (grid/slot) - see `IsAddressedType`; their
+-- capacity model is spatial (`CanItemFit`/`FindEmptySlot`), weight isn't a second gate
+-- on top of it. Use this before manually adjusting weights; `CanStoreItem` already
+-- calls this internally when an item has a weight field.
 -- @realm shared
 -- @param weight number The additional weight to test against remaining capacity.
 -- @return boolean True if the weight fits, false otherwise.
 -- @return string|nil A human-readable reason string when returning false.
 function inventory:CanStoreWeight(weight)
+    if ( self:IsAddressedType() ) then return true end
+
     local currentWeight = self:GetWeight()
     local maxWeight = self:GetMaxWeight()
 
@@ -462,7 +493,8 @@ end
 --- Returns whether an item of the given class can be stored in this inventory.
 -- Performs three checks in order:
 -- 1. Validates that `itemClass` is registered in `ax.item.stored`.
--- 2. Checks weight capacity if `itemData.weight` is set (delegates to `CanStoreWeight`).
+-- 2. Checks weight capacity if `itemData.weight` is set (delegates to `CanStoreWeight` -
+--    a no-op for addressed types, see `IsAddressedType`).
 -- 3. Calls `itemData:CanAddToInventory(self)` if defined — returning false from that hook blocks storage regardless of weight.
 -- Returns true on success, or false and a descriptive reason string on failure.
 -- Called automatically by `AddItem` before any database operations.
@@ -476,8 +508,11 @@ function inventory:CanStoreItem(itemClass)
         return false, "Invalid item class."
     end
 
-    if ( itemData.weight and self:GetWeight() + itemData.weight > self:GetMaxWeight() ) then
-        return false, "This inventory cannot hold that much weight."
+    if ( itemData.weight ) then
+        local canStoreWeight, weightReason = self:CanStoreWeight(itemData.weight)
+        if ( !canStoreWeight ) then
+            return false, weightReason
+        end
     end
 
     if ( isfunction(itemData.CanAddToInventory) and itemData:CanAddToInventory(self) == false ) then

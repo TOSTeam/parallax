@@ -183,13 +183,16 @@ function ax.item:Transfer(item, fromInventory, toInventory, placement, client, c
         end
     end
 
-    -- Weight capacity is a universal base-meta check (back-compat) - types layer
-    -- additional rules via CanReceiveItem on top of it, they don't replace it.
-    if ( toInventoryID != 0 and math.Round(toInventory:GetWeight() + item:GetWeight(), 2) > toInventory:GetMaxWeight() ) then
+    local toTypeDef = ax.inventory:GetType(toInventory)
+
+    -- Weight capacity is a base-meta check (back-compat) for non-addressed types (e.g.
+    -- "weight") - addressed types (grid/slot) have their own spatial capacity model via
+    -- CanReceiveItem/ResolvePlacement below, so weight isn't a second gate on top of it.
+    -- See inventory:IsAddressedType.
+    if ( toInventoryID != 0 and !toInventory:IsAddressedType() and math.Round(toInventory:GetWeight() + item:GetWeight(), 2) > toInventory:GetMaxWeight() ) then
         return fail("inventory.reason.no_space")
     end
 
-    local toTypeDef = ax.inventory:GetType(toInventory)
     if ( istable(toTypeDef) and isfunction(toTypeDef.CanReceiveItem) ) then
         local canReceive, receiveReason = toTypeDef.CanReceiveItem(toInventory, item, placement)
         if ( canReceive == false ) then

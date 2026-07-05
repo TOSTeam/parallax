@@ -291,7 +291,8 @@ function ax.item:CreateDefaultTakeAction()
                 return false, "You do not have a valid inventory."
             end
 
-            if ( math.Round(inventory:GetWeight() + item:GetWeight(), 2) > inventory:GetMaxWeight() ) then
+            local canStoreWeight = inventory:CanStoreWeight(item:GetWeight())
+            if ( !canStoreWeight ) then
                 return false, "Your inventory cannot hold this item."
             end
 
