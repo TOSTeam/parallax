@@ -471,13 +471,14 @@ ax.command:Add("give", {
             return false
         end
 
-        -- Transfer item
-        local success, reason = ax.item:Transfer(itemToGive, playerInv, targetInv, function(success)
+        -- Transfer item (nil placement = auto-place; pass the initiating client so
+        -- access rules apply)
+        local success, reason = ax.item:Transfer(itemToGive, playerInv, targetInv, nil, client, function(success, reasonCode)
             if success then
                 client:Notify("You gave " .. itemToGive.name .. " to " .. target:Nick())
                 target:Notify("You received " .. itemToGive.name .. " from " .. client:Nick())
             else
-                client:Notify("Failed to give item: " .. reason)
+                client:Notify(ax.localization:GetPhrase(reasonCode or "inventory.reason.invalid"))
             end
         end)
 

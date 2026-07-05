@@ -166,25 +166,28 @@ ax.item:Spawn("pistol", Vector(0, 0, 0), Angle(0, 0, 0), function(entity, itemOb
 end)
 ```
 
-### `ax.item:Transfer(item, fromInv, toInv, callback)`
+### `ax.item:Transfer(item, fromInv, toInv, placement, client, callback)`
 
-Transfer item between inventories.
+Transfer item between inventories (server). The single transaction behind every
+item move - drag-and-drop, equip, world drop/pickup, reward grants.
 
 **Parameters:**
 
 - `item` (table): Item instance
-- `fromInv` (table|number): Source inventory
-- `toInv` (table|number): Destination inventory
-- `callback` (function): Completion callback
+- `fromInv` (table|number): Source inventory (`0`/`nil` for the world)
+- `toInv` (table|number): Destination inventory (`0`/`nil` for the world)
+- `placement` (table|nil): Explicit placement for addressed types (e.g. `{ gridX = 1, gridY = 2 }`), or `nil` to auto-place
+- `client` (Player|nil): Initiating player; `nil` marks a trusted/system call and skips the access gate
+- `callback` (function): Completion callback, receives `(success, reasonCode)`
 
 **Returns:**
 
 - (boolean): Success
-- (string|nil): Error message
+- (string|nil): Failure reason code (phrase key, e.g. `"inventory.reason.no_space"`)
 
 **Example:**
 ```lua
-local success, reason = ax.item:Transfer(item, playerInv, 0, function(success)
+local success, reason = ax.item:Transfer(item, playerInv, 0, nil, client, function(success, reasonCode)
     if success then
         print("Item dropped")
     end
@@ -406,7 +409,7 @@ Create new inventory (server).
 
 **Parameters:**
 
-- `data` (table): Inventory properties
+- `data` (table): Inventory properties (`owner`, `typeID`, `maxWeight`, `data`)
 - `callback` (function): Completion callback
 
 **Returns:**
@@ -415,10 +418,61 @@ Create new inventory (server).
 
 **Example:**
 ```lua
-ax.inventory:Create({maxWeight = 50}, function(inventory)
+ax.inventory:Create({
+    owner = character, -- resolved via registered owner resolvers
+    typeID = "weight", -- defaults to SCHEMA.defaultInventoryType (itself "weight")
+    maxWeight = 50
+}, function(inventory)
     print("Created inventory:", inventory.id)
 end)
 ```
+
+### `ax.inventory:RegisterType(id, data)`
+
+Register an inventory type (addressing + capacity rules). See the
+[Inventory System](02-CORE_SYSTEMS.md#inventory-system-axinventory) manual for the
+full contract.
+
+**Parameters:**
+
+- `id` (string): Type ID (e.g. `"weight"`, `"character_grid"`)
+- `data` (table): Type definition (`CanReceiveItem`, `CanRemoveItem`, `CanAccess`, addressing hooks, ...)
+
+### `ax.inventory:GetType(inventory)`
+
+Get the type definition backing an inventory instance. Falls back to the
+`"weight"` type for legacy rows with no `typeID`.
+
+**Returns:**
+
+- (table): Type definition
+
+### `ax.inventory:RegisterOwnerResolver(def)`
+
+Register an owner kind so owner objects can be resolved to/from
+`(ownerKind, ownerID)` storage columns.
+
+**Parameters:**
+
+- `def` (table): `{ kind, checkOwner, getOwner, resolveOwner }` (`resolveOwner` optional)
+
+### `ax.inventory:RestoreOwner(owner, callback)`
+
+Load every inventory a character/item owns from the database (server).
+
+**Parameters:**
+
+- `owner` (table): Owner object recognised by a registered resolver
+- `callback` (function): Receives the restored inventories
+
+### `ax.inventory:CanAccess(inventory, client)`
+
+Check whether a client may modify an inventory (owner rule + the type's own
+`CanAccess`).
+
+**Returns:**
+
+- (boolean): Access allowed
 
 ### Inventory Methods
 

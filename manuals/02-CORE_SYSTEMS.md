@@ -547,20 +547,40 @@ local typeDef = ax.inventory:GetType(inventory)
 
 A type with no addressing (the default) skips placement validation entirely in
 `Transfer` and keeps writing an empty placement blob - this is what makes the
-`weight` type back-compatible.
+`weight` type back-compatible. The two capacity models are mutually exclusive,
+not stacked: non-addressed types (`weight`, and anything without `CanItemFit`)
+enforce the `maxWeight` cap; addressed types (grid/slot) are bounded by their
+own placement rule instead and are never weight-gated (`inventory:CanStoreWeight`/
+`IsFull` always report "has room" for them - see `inventory:IsAddressedType`). A
+type that wants both can still add its own weight check inside `CanReceiveItem`.
 
 ### Ownership and Access
 
 `ownerKind`/`ownerID` are never hand-typed strings above the database layer -
-they're resolved through registered owner resolvers:
+they're resolved through registered owner resolvers, in both directions:
+`checkOwner`/`getOwner` turn an owner object (a character, an item, ...) into
+`(ownerKind, ownerID)` for storage; the optional `resolveOwner` turns
+`(ownerKind, ownerID)` back into the live object - it's what powers
+`inventory:GetOwner()`.
 
 ```lua
 ax.inventory:RegisterOwnerResolver({
     kind = "character",
-    checkOwner = function(owner) return istable(owner) and owner.GetID != nil end,
+    checkOwner = function(owner) return istable(owner) and getmetatable(owner) == ax.character.meta end,
     getOwner = function(owner) return owner:GetID() end,
+    resolveOwner = function(ownerID) return ax.character.instances[ownerID] end, -- optional; omit if this kind can't be resolved back to a live object
 })
+
+-- Get the character/item/entity that owns an inventory - dispatches to whichever
+-- kind's resolveOwner is registered
+local owner = inventory:GetOwner()
 ```
+
+Two owner kinds ship built-in: `"character"` and `"item"` (both with
+`resolveOwner`). `"entity"` owners (e.g. a world container) are deliberately
+**not** built in - only the module that spawns those entities knows how to
+derive a persistent id for one (never `Entity:EntIndex()` - it doesn't survive
+a restart), so that module registers its own resolver.
 
 The core enforces exactly one built-in access rule - **an owner-character may
 modify their own inventories** - and otherwise defers to the type's own
@@ -574,6 +594,51 @@ end
 
 "Can access" (may modify) and "is a receiver" (gets synced state) are separate
 concepts - a player can see an inventory without being allowed to change it.
+
+### Owned Inventories (Extra Inventories, Bags)
+
+An owner can have more than one inventory at once - e.g. a character's main
+grid plus a separate equipment inventory, or a bag item that owns its own
+inventory for its contents. `character` and `item` instances both expose the
+same pair of accessors to enumerate what they own:
+
+```lua
+-- Every loaded inventory this character/item owns
+local inventories = character:GetInventories()  -- or item:GetInventories()
+
+-- The owned inventory of a specific type, or nil
+local equipment = character:GetInventoryByType("character_equipment")
+local bagContents = item:GetInventoryByType("bag")
+```
+
+These only return inventories already loaded into `ax.inventory.instances` -
+call `ax.inventory:RestoreOwner(owner, callback)` first after loading a
+character/item whose extra inventories haven't been restored yet. Note the
+distinction from `character:GetInventoryID()`/`item:GetInventoryID()`, which
+is the *legacy primary* inventory column / the inventory the item currently
+sits *in* - the opposite direction from "what does this thing own".
+
+### Primary Inventory Type
+
+A character's primary inventory (`vars.inventory`, returned by
+`character:GetInventory()`) defaults to the `"weight"` type. A schema can
+switch every new character to a different type (e.g. a grid) in one line by
+declaring it in `schema/boot.lua` - the same convention as `SCHEMA.name`/
+`SCHEMA.author`:
+
+```lua
+-- schema/boot.lua
+SCHEMA.defaultInventoryType = "character_grid"
+SCHEMA.defaultInventoryData = { width = 8, height = 6 } -- may also include maxWeight
+```
+
+This only affects inventories created afterwards with no explicit `typeID`
+(the character's primary inventory, and anything else that calls
+`ax.inventory:Create`/`CreateTemporary` without one) - existing rows keep
+whatever type they were actually created with. If `defaultInventoryType`
+names a type nobody registered (typo, or the registering file hasn't loaded
+yet), it logs a warning and falls back to `"weight"` rather than silently
+creating an inventory of a non-existent type.
 
 ### Inventory API
 
@@ -626,8 +691,8 @@ end)
 
 Checks run in a fixed order: client access to both endpoints -> anti-dupe lock on
 the item -> item-level `CanTransferItem` hook -> source type's `CanRemoveItem` ->
-destination type's `CanReceiveItem` (plus weight capacity as a universal
-baseline) -> placement resolution (skipped for non-addressed types) -> depth-1
+weight capacity (non-addressed types only - see `IsAddressedType`) -> destination
+type's `CanReceiveItem` -> placement resolution (addressed types only) -> depth-1
 nesting (an item that owns an inventory can never end up inside another
 item-owned inventory). The database write happens before any in-memory state
 changes, so a DB failure never leaves memory and DB diverged.
@@ -662,26 +727,32 @@ treat the key itself as an enum, not display copy.
 
 ### Inventory Synchronization
 
-A full snapshot of the inventory is sent on every change - there is no delta
-protocol. The payload includes the type and owner fields as additive tail
-arguments, so a receiver that predates the type registry still gets a working
-default (`weight`, `{}`) sync:
+`ax.inventory:Sync(inventory)` sends a full snapshot to every current receiver
+- there is no delta protocol at this layer. The payload includes the type and
+owner fields as additive tail arguments, so a receiver that predates the type
+registry still gets a working default (`weight`, `{}`) sync:
 
 ```lua
--- Sync inventory to all receivers (server)
+-- Full snapshot to all current receivers (server)
 ax.inventory:Sync(inventoryID)
-
--- Sync to specific recipients
-ax.inventory:Sync(inventoryID, {client1, client2})
 ```
+
+`Transfer` and `item:SetData` do **not** call `Sync` on every change anymore -
+they broadcast small targeted messages instead (`item.transfer` - which also
+covers a same-inventory reposition as `from == to` - and `item.set_data`) so a
+single item move/edit doesn't
+re-send the whole inventory. `Sync` itself is still what's called when a
+receiver first needs the complete picture - e.g. adding a receiver, or
+restoring a character's inventories on load.
 
 ### Creating Inventories (Server)
 
 ```lua
 ax.inventory:Create({
-    owner = character,   -- resolved to (ownerKind, ownerID) via the registered resolvers
-    typeID = "weight",    -- defaults to "weight" if omitted (back-compat)
-    maxWeight = 50.0
+    owner = character,     -- resolved to (ownerKind, ownerID) via the registered resolvers
+    typeID = "character_grid", -- defaults to SCHEMA.defaultInventoryType (itself "weight") if omitted
+    maxWeight = 50.0,       -- only meaningful for non-addressed types
+    data = { width = 8, height = 6 }, -- type-specific instance data (grid size, slot set, ...)
 }, function(inventory)
     print("Created inventory:", inventory.id)
 end)
