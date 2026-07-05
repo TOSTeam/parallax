@@ -225,7 +225,7 @@ function item:GetSlotID()
 end
 
 --- Returns whether this item is locked by an in-progress transfer transaction.
--- Set by `ax.inventory:Transfer` for the duration of a single transfer to close the race
+-- Set by `ax.item:Transfer` for the duration of a single transfer to close the race
 -- where two players act on the same item (e.g. a shared container) before the first
 -- transfer's database write returns. Purely an in-memory flag - never persisted, never
 -- true across a restart.
@@ -236,7 +236,7 @@ function item:IsLocked()
 end
 
 --- Locks this item, blocking further transfers until `Unlock` is called.
--- Internal - called by `ax.inventory:Transfer` at the start of a transaction. Not
+-- Internal - called by `ax.item:Transfer` at the start of a transaction. Not
 -- meant to be called directly by gameplay code.
 -- @realm server
 -- @internal
@@ -245,7 +245,7 @@ function item:Lock()
 end
 
 --- Unlocks this item after its in-progress transfer transaction finishes, successfully or not.
--- Internal - called by `ax.inventory:Transfer`. Not meant to be called directly by gameplay code.
+-- Internal - called by `ax.item:Transfer`. Not meant to be called directly by gameplay code.
 -- @realm server
 -- @internal
 function item:Unlock()

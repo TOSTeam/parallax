@@ -359,7 +359,7 @@ function ax.character:Restore(client, callback)
             end
 
             local character = setmetatable({}, ax.character.meta)
-            character.id = result[i].id
+            character.id = tonumber(result[i].id)
             character.vars = {}
 
             for k, v in pairs(self.vars) do

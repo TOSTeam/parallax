@@ -218,18 +218,11 @@ function inventory:GetItemsByBase(baseName, includeInactive)
 end
 
 --- Returns the item instance with the given ID, or nil if not found.
--- Performs a linear search through `self.items`. For large inventories, consider caching the result. Returns nil when no item with that ID exists.
 -- @realm shared
 -- @param itemID number The numeric item ID to look up.
 -- @return table|nil The item instance, or nil if not found.
 function inventory:GetItemByID(itemID)
-    for id, v in pairs(self.items) do
-        if ( id == itemID ) then
-            return v
-        end
-    end
-
-    return nil
+    return self.items[itemID]
 end
 
 --- Counts items in the inventory matching an ID or class name.

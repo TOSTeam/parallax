@@ -161,7 +161,7 @@ function ax.inventory:CanAccess(inventory, client)
 
     if ( inventory.ownerKind == "character" ) then
         local character = client:GetCharacter()
-        if ( istable(character) and tostring(character:GetID()) == tostring(inventory.ownerID) ) then
+        if ( istable(character) and character:GetID() == inventory.ownerID ) then
             return true
         end
     elseif ( inventory.ownerKind == nil ) then
@@ -205,7 +205,7 @@ function ax.inventory:GetOwnedBy(owner)
     end
 
     for _, inventory in pairs(self.instances) do
-        if ( istable(inventory) and inventory.ownerKind == ownerKind and tostring(inventory.ownerID) == tostring(ownerID) ) then
+        if ( istable(inventory) and inventory.ownerKind == ownerKind and inventory.ownerID == ownerID ) then
             owned[#owned + 1] = inventory
         end
     end
@@ -245,7 +245,7 @@ function ax.inventory:ItemOwnsInventory(itemID)
     if ( inventoryID == nil ) then return false end
 
     local inventory = self.instances[inventoryID]
-    if ( !istable(inventory) or inventory.ownerKind != "item" or tostring(inventory.ownerID) != tostring(itemID) ) then
+    if ( !istable(inventory) or inventory.ownerKind != "item" or inventory.ownerID != itemID ) then
         self.itemOwnerIndex[itemID] = nil
 
         return false
@@ -316,7 +316,7 @@ if ( SERVER ) then
         inventory.receivers = fields.receivers or {}
         inventory.typeID = fields.typeID
         inventory.ownerKind = fields.ownerKind
-        inventory.ownerID = fields.ownerID
+        inventory.ownerID = fields.ownerID != nil and tonumber(fields.ownerID) or nil
         inventory.data = fields.data or {}
 
         return inventory
@@ -502,7 +502,7 @@ if ( SERVER ) then
             maxWeight = tonumber(row.max_weight) or 30.0,
             typeID = row.type_id or "weight",
             ownerKind = row.owner_kind,
-            ownerID = row.owner_id != nil and tonumber(row.owner_id) or nil,
+            ownerID = row.owner_id,
             data = ax.util:SafeParseTable(row.data) or {},
         })
 
@@ -662,7 +662,7 @@ if ( SERVER ) then
         itemQuery:Execute()
     end
 
-    local function SyncInventoryNow(self, inventory)
+    local function SyncInventoryNow(inventory)
         -- Base entry shape is exactly the pre-registry payload (id/class/data/inventoryID).
         -- Any additional fields (grid position, slot id, ...) are contributed by the
         -- inventory's own type via GetSyncFields, so this function never has to know
@@ -689,14 +689,15 @@ if ( SERVER ) then
 
         -- typeID/instance data/owner fields are additive tail arguments - a receiver
         -- that never reads them (old client build) still gets a working weight-type sync.
-        ax.net:Start(inventory:GetReceivers(), "inventory.sync", inventory.id, items, inventory.maxWeight, inventory.receivers or {}, inventory:GetTypeID(), inventory.data or {}, inventory.ownerKind, inventory.ownerID)
+        local receivers = inventory:GetReceivers()
+        ax.net:Start(receivers, "inventory.sync", inventory.id, items, inventory.maxWeight, inventory.receivers or {}, inventory:GetTypeID(), inventory.data or {}, inventory.ownerKind, inventory.ownerID)
 
-        self._syncState = self._syncState or {}
-        local state = self._syncState[inventory.id] or {}
+        ax.inventory._syncState = ax.inventory._syncState or {}
+        local state = ax.inventory._syncState[inventory.id] or {}
         state.lastSync = CurTime()
-        self._syncState[inventory.id] = state
+        ax.inventory._syncState[inventory.id] = state
 
-        ax.util:PrintDebug(string.format("Synchronized inventory %s with %d receivers.", tostring(inventory.id), #inventory:GetReceivers()))
+        ax.util:PrintDebug(string.format("Synchronized inventory %s with %d receivers.", tostring(inventory.id), #receivers))
     end
 
     --- Synchronizes the specified inventory with all clients.
@@ -722,7 +723,7 @@ if ( SERVER ) then
         local minRefreshInterval = math.max(tonumber(ax.config:Get("inventory.sync.full_refresh_interval", 0.0)) or 0.0, 0)
 
         if ( !useSyncScheduling ) then
-            SyncInventoryNow(self, inventory)
+            SyncInventoryNow(inventory)
             return
         end
 
@@ -738,7 +739,7 @@ if ( SERVER ) then
 
         if ( delay <= 0 ) then
             timer.Remove(timerName)
-            SyncInventoryNow(self, inventory)
+            SyncInventoryNow(inventory)
             return
         end
 
@@ -748,7 +749,7 @@ if ( SERVER ) then
                 return
             end
 
-            SyncInventoryNow(self, liveInventory)
+            SyncInventoryNow(liveInventory)
         end)
     end
 
@@ -816,7 +817,7 @@ if ( SERVER ) then
 
                     self:Sync(inventory)
 
-                    if ( tostring(inventory.ownerID) == tostring(activeCharacterID) ) then
+                    if ( inventory.ownerID == activeCharacterID ) then
                         inventory:AddReceiver(client)
                         ax.util:PrintDebug(string.format("Added %s as a receiver to inventory %d", client:SteamID64(), inventory.id))
                     end
