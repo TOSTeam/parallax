@@ -190,18 +190,7 @@ end
 -- @realm shared
 -- @return table An array of inventory instances.
 function item:GetInventories()
-    local owned = {}
-
-    local ownerKind, ownerID = ax.inventory:ResolveOwner(self)
-    if ( ownerKind == nil or ownerID == nil ) then return owned end
-
-    for _, inventory in pairs(ax.inventory.instances) do
-        if ( istable(inventory) and inventory.ownerKind == ownerKind and tostring(inventory.ownerID) == tostring(ownerID) ) then
-            owned[#owned + 1] = inventory
-        end
-    end
-
-    return owned
+    return ax.inventory:GetOwnedBy(self)
 end
 
 --- Returns this item's owned inventory of the given type (e.g. `"bag"`), or nil if it doesn't
@@ -210,13 +199,7 @@ end
 -- @param typeID string The inventory type id to look for.
 -- @return table|nil
 function item:GetInventoryByType(typeID)
-    for _, inventory in pairs(self:GetInventories()) do
-        if ( inventory:GetTypeID() == typeID ) then
-            return inventory
-        end
-    end
-
-    return nil
+    return ax.inventory:GetOwnedByType(self, typeID)
 end
 
 --- Grid column this item currently occupies, if placed in a grid-addressed inventory.

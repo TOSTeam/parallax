@@ -56,18 +56,7 @@ character.GetInv = character.GetInventory
 -- @realm shared
 -- @return table An array of inventory instances.
 function character:GetInventories()
-    local owned = {}
-
-    local ownerKind, ownerID = ax.inventory:ResolveOwner(self)
-    if ( ownerKind == nil or ownerID == nil ) then return owned end
-
-    for _, inventory in pairs(ax.inventory.instances) do
-        if ( istable(inventory) and inventory.ownerKind == ownerKind and tostring(inventory.ownerID) == tostring(ownerID) ) then
-            owned[#owned + 1] = inventory
-        end
-    end
-
-    return owned
+    return ax.inventory:GetOwnedBy(self)
 end
 
 --- Returns this character's inventory of the given type (e.g. `"equipment"`), or nil
@@ -76,13 +65,7 @@ end
 -- @param typeID string The inventory type id to look for.
 -- @return table|nil
 function character:GetInventoryByType(typeID)
-    for _, inventory in pairs(self:GetInventories()) do
-        if ( inventory:GetTypeID() == typeID ) then
-            return inventory
-        end
-    end
-
-    return nil
+    return ax.inventory:GetOwnedByType(self, typeID)
 end
 
 --- Returns the numeric ID of the character's inventory.
