@@ -622,13 +622,17 @@ sits *in* - the opposite direction from "what does this thing own".
 
 A character's primary inventory (`vars.inventory`, returned by
 `character:GetInventory()`) defaults to the `"weight"` type. A schema can
-switch every new character to a different type (e.g. a grid) in one line by
-declaring it in `schema/boot.lua` - the same convention as `SCHEMA.name`/
-`SCHEMA.author`:
+switch every new character to a different type in one line by declaring it in
+`schema/boot.lua` - the same convention as `SCHEMA.name`/`SCHEMA.author`. The
+framework registers `"grid"` and `"slot"` as built-in types alongside
+`"weight"` (`ax.inventory:RegisterBuiltinTypes`), backed by the
+`gridBehavior`/`slotBehavior` primitives with no customisation - use one of
+these directly if the schema doesn't need its own access rules or UI-renderer
+id; otherwise register a named type of its own (see `RegisterType` below):
 
 ```lua
 -- schema/boot.lua
-SCHEMA.defaultInventoryType = "character_grid"
+SCHEMA.defaultInventoryType = "grid"
 SCHEMA.defaultInventoryData = { width = 8, height = 6 } -- may also include maxWeight
 ```
 
@@ -750,7 +754,7 @@ restoring a character's inventories on load.
 ```lua
 ax.inventory:Create({
     owner = character,     -- resolved to (ownerKind, ownerID) via the registered resolvers
-    typeID = "character_grid", -- defaults to SCHEMA.defaultInventoryType (itself "weight") if omitted
+    typeID = "grid", -- defaults to SCHEMA.defaultInventoryType (itself "weight") if omitted
     maxWeight = 50.0,       -- only meaningful for non-addressed types
     data = { width = 8, height = 6 }, -- type-specific instance data (grid size, slot set, ...)
 }, function(inventory)

@@ -435,7 +435,7 @@ full contract.
 
 **Parameters:**
 
-- `id` (string): Type ID (e.g. `"weight"`, `"character_grid"`)
+- `id` (string): Type ID (e.g. `"weight"`, `"grid"`, `"slot"`, or a schema/module-owned name)
 - `data` (table): Type definition (`CanReceiveItem`, `CanRemoveItem`, `CanAccess`, addressing hooks, ...)
 
 ### `ax.inventory:GetType(inventory)`

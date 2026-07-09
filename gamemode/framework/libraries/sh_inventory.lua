@@ -285,7 +285,7 @@ ax.inventory.instances[0] = setmetatable({
 -- never registered via `ax.inventory:RegisterType` (e.g. a typo, or the registering file hasn't
 -- loaded yet) - never silently creates inventories of a type that doesn't exist.
 -- @usage -- schema/boot.lua
--- @usage SCHEMA.defaultInventoryType = "character_grid"
+-- @usage SCHEMA.defaultInventoryType = "grid"
 -- @usage SCHEMA.defaultInventoryData = { width = 8, height = 6 }
 function ax.inventory:GetDefaultType()
     local data = ( SCHEMA and istable(SCHEMA.defaultInventoryData) ) and SCHEMA.defaultInventoryData or {}

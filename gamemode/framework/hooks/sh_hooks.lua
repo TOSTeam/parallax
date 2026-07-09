@@ -32,6 +32,12 @@ local function OnHotReloadOnce()
         ax.util:PrintDebug("OnReloaded: Using time filter of " .. timeFilter .. " seconds for hot-reload optimization")
     end
 
+    -- framework/libraries isn't part of the hot-reloaded directories below (it's core,
+    -- loaded once by the engine's addon autoloader) - re-run the built-in inventory
+    -- type registration explicitly so it survives a reload the same way schema/module
+    -- registrations do.
+    ax.inventory:RegisterBuiltinTypes()
+
     ax.util:IncludeDirectory("parallax/gamemode/localization", true, nil, timeFilter)
     ax.faction:Include("parallax/gamemode/factions", timeFilter)
     ax.class:Include("parallax/gamemode/classes", timeFilter)

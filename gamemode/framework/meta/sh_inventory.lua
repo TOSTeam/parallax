@@ -255,7 +255,8 @@ end
 --- Returns the object that owns this inventory - a character, item, or entity, depending on
 -- `GetOwnerKind()`.
 -- Resolves `ownerKind`/`ownerID` (set for any inventory created with `owner = ...`, e.g.
--- `character_grid`/`character_equipment`, a bag item's inventory) via
+-- a character's primary inventory, a schema's additive equipment inventory, a bag
+-- item's inventory) via
 -- `ax.inventory:ResolveOwnerObject`, which dispatches to the `resolveOwner` callback of
 -- whichever resolver registered that kind (see `ax.inventory:RegisterOwnerResolver`). Falls
 -- back to searching for a character whose legacy `vars.inventory` matches this inventory's ID,

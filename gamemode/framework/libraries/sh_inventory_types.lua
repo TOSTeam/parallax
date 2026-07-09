@@ -21,9 +21,10 @@ ax.inventory.types = ax.inventory.types or {}
 --- Registers an inventory type definition.
 -- A type defines how items are addressed within an inventory (grid `x,y`, named
 -- `slotID`, or no addressing at all) plus optional access rules and a UI renderer
--- id. Concrete types register themselves from their own schema/module, reusing the
--- shared `ax.inventory.gridBehavior`/`ax.inventory.slotBehavior` primitives as-is or
--- merged with their own `CanReceiveItem`/`CanRemoveItem` rules.
+-- id. A schema/module that needs its own access rules (`CanReceiveItem`/
+-- `CanRemoveItem`) or a distinct UI renderer id still registers its own named type,
+-- merging in `ax.inventory.gridBehavior`/`ax.inventory.slotBehavior` as needed - see
+-- `RegisterBuiltinTypes` below for the case where no customisation is needed at all.
 -- @realm shared
 -- @param id string Unique type identifier (e.g. "weight", "bag", "equipment")
 -- @param data table Type definition. Recognised keys: `GetWidth`, `GetHeight`,
@@ -239,10 +240,26 @@ ax.inventory.slotBehavior = {
     end,
 }
 
---- The default inventory type: a weight-limited list with no positional addressing,
--- i.e. exactly current `ax.inventory` behaviour (`GetWeight`/`CanStoreWeight`/
--- `CanStoreItem` on the meta already implement this). Every inventory without an
--- explicit `typeID` resolves to this type (see `GetType` above) so existing schemas
--- and the containers module see no behaviour change.
+--- Registers the framework's built-in inventory types: `weight` (the default - a
+-- weight-limited list with no positional addressing, i.e. exactly current
+-- `ax.inventory` behaviour, `GetWeight`/`CanStoreWeight`/`CanStoreItem` on the meta
+-- already implement this), plus plain `grid` and `slot` types backed by the
+-- `gridBehavior`/`slotBehavior` primitives as-is. `grid`/`slot` exist so a schema
+-- that wants an unmodified grid or slot inventory (e.g. as `SCHEMA.defaultInventoryType`)
+-- doesn't have to register its own type purely to alias a primitive with no
+-- customisation - a schema/module that needs its own access rules or a distinct UI
+-- renderer id still registers its own named type (see `RegisterType` above).
+-- Called once at file load and again on every hot-reload (`OnHotReloadOnce` in
+-- `framework/hooks/sh_hooks.lua`) - safe to call repeatedly, `RegisterType` is a
+-- plain table assignment with no database or instance-state side effects, so
+-- existing inventories of these types are entirely unaffected by re-registration.
 -- @realm shared
-ax.inventory:RegisterType("weight", {})
+function ax.inventory:RegisterBuiltinTypes()
+    self:RegisterType("weight", {})
+    self:RegisterType("grid", self.gridBehavior)
+    self:RegisterType("slot", self.slotBehavior)
+end
+
+-- Every inventory without an explicit `typeID` resolves to `"weight"` (see `GetType`
+-- above) so existing schemas and the containers module see no behaviour change.
+ax.inventory:RegisterBuiltinTypes()
