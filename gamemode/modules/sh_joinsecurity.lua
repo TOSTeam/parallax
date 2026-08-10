@@ -21,6 +21,12 @@ ax.config:Add("joinsecurity.versionmismatch.branchmatch", ax.type.bool, false, {
     category = "general",
 })
 
+ax.config:Add("joinsecurity.antivpn", ax.type.bool, false, {
+    description = "joinsecurity.antivpn.help",
+    subCategory = "joinsecurity",
+    category = "general",
+})
+
 ax.localization:Register("en", {
     ["subcategory.joinsecurity"] = "Join Security",
 
@@ -31,6 +37,9 @@ ax.localization:Register("en", {
 
     ["config.joinsecurity.versionmismatch"] = "Version Mismatch",
     ["config.joinsecurity.versionmismatch.help"] = "Kicks players with mismatched client versions.",
+
+    ["config.joinsecurity.antivpn"] = "Anti-VPN",
+    ["config.joinsecurity.antivpn.help"] = "Kicks players using VPN services.",
 
     ["config.joinsecurity.versionmismatch.branchmatch"] = "Branch Match",
     ["config.joinsecurity.versionmismatch.branchmatch.help"] = "Only kicks players with mismatched client versions on the same branch as the server.",
@@ -60,20 +69,40 @@ if ( SERVER ) then
 
     MODULE.GMODVERSION  = VERSION
     MODULE.GMODBRANCH   = BRANCH
+    MODULE.ProxyURL = "https://proxycheck.io/v3/"
     function MODULE:PlayerAuthed(client, steamid, _)
-        if ( !ax.config:Get("joinsecurity.antifamilyshare", true) ) then return end
+        if ( game.SinglePlayer() ) then return end
 
-        local sid64Owner = client:OwnerSteamID64()
-        local sid64 = util.SteamIDTo64(steamid)
+        if ( ax.config:Get("joinsecurity.antivpn", true) ) then
+            local ip = client:IPAddress()
+            http.Fetch(self.ProxyURL .. ip, function(body, size, headers, responseCode)
+                if ( responseCode != 200 ) then return end
 
-        if ( sid64Owner != sid64 ) then
-            client:Kick(ax.localization:GetPhrase("joinsecurity.antifamilyshare.kick_msg") or "You must own the game, not play it via family sharing.")
-            print("Player " .. client:SteamName() .. "(" .. client:SteamID64() .. ")" .. " has been kicked for anti-family share violation.")
-            return
+                local data = util.JSONToTable(body)
+                local result = data[ip]
+                if ( data and result and result.detections.vpn == true ) then
+                    client:Kick(ax.localization:GetPhrase("joinsecurity.antivpn.kick_msg") or "You are not allowed to use a VPN.")
+                    print("Player " .. client:SteamName() .. "(" .. client:SteamID64() .. ")" .. " has been kicked for using a VPN.")
+                end
+            end, function(error)
+                print("Error fetching proxy check data for player " .. client:SteamName() .. ": " .. error)
+            end)
+        end
+
+        if ( ax.config:Get("joinsecurity.antifamilyshare", true) ) then
+            local sid64Owner = client:OwnerSteamID64()
+            local sid64 = util.SteamIDTo64(steamid)
+
+            if ( sid64Owner != sid64 ) then
+                client:Kick(ax.localization:GetPhrase("joinsecurity.antifamilyshare.kick_msg") or "You must own the game, not play it via family sharing.")
+                print("Player " .. client:SteamName() .. "(" .. client:SteamID64() .. ")" .. " has been kicked for anti-family share violation.")
+                return
+            end
         end
     end
 
     ax.net:Hook("joinsecurity.versioncheck", function(client, clientVersion, clientBranch)
+        if ( game.SinglePlayer() ) then return end
         if ( !ax.config:Get("joinsecurity.versionmismatch", true) ) then return end
 
         if ( ( ax.config:Get("config.joinsecurity.versionmismatch.branchmatch", true) and clientBranch == MODULE.GMODBRANCH ) and clientVersion != MODULE.GMODVERSION ) then
@@ -84,6 +113,8 @@ if ( SERVER ) then
     end)
 else
     function MODULE:OnClientCached()
+        if ( game.SinglePlayer() ) then return end
+
         ax.net:Start("joinsecurity.versioncheck", VERSION, BRANCH)
     end
 end
